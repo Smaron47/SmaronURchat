@@ -27,7 +27,7 @@
     --sidebar-w: 300px;
   }
   * { margin: 0; padding: 0; box-sizing: border-box; }
-  html, body { height: 100%; overflow: hidden; }
+  html, body { height: 100%; height: 100dvh; overflow: hidden; }
   body { font-family: 'Space Grotesk', sans-serif; background: var(--bg); color: var(--text); display: flex; }
 
   /* ===== SIDEBAR ===== */
@@ -189,6 +189,9 @@
     font-size: 14px; line-height: 1.5; position: relative;
     animation: msgIn 0.25s cubic-bezier(0.34,1.56,0.64,1);
     word-break: break-word;
+    overflow-wrap: anywhere;
+    white-space: pre-wrap;
+    min-width: 40px;
   }
   @keyframes msgIn { from { opacity: 0; transform: translateY(8px) scale(0.95); } to { opacity: 1; transform: none; } }
   .msg-row:not(.mine) .bubble {
@@ -399,9 +402,25 @@
     cursor: pointer; box-shadow: 0 4px 20px var(--accent-glow);
   }
   @media (max-width: 768px) {
-    .sidebar { position: fixed; left: -100%; z-index: 100; transition: left 0.3s; }
+    .sidebar { position: fixed; left: -100%; z-index: 100; transition: left 0.3s; width: 85%; min-width: 260px; }
     .sidebar.open { left: 0; }
     .sidebar-toggle { display: flex; align-items: center; justify-content: center; }
+    .main { width: 100%; height: 100vh; height: 100dvh; }
+    #chat-view { height: 100vh; height: 100dvh; }
+    .messages-area { padding: 12px 12px 8px; }
+    .bubble { max-width: 82%; }
+    .input-area { padding: 10px 12px; padding-bottom: max(10px, env(safe-area-inset-bottom)); }
+    .chat-header { padding: 10px 12px; min-height: 60px; }
+    .call-panel { min-width: unset; width: 90vw; padding: 28px 20px; }
+    #remoteVideo { width: 100%; height: 180px; }
+    #localVideo { width: 80px; height: 60px; }
+    .video-grid { flex-direction: column; align-items: center; }
+    .msg-textarea { font-size: 16px; } /* prevent iOS zoom on focus */
+  }
+  @media (max-width: 400px) {
+    .bubble { max-width: 88%; font-size: 13px; }
+    .input-toolbar { gap: 3px; }
+    .tool-btn { width: 28px; height: 28px; font-size: 14px; }
   }
 
   /* Scrollbar for messages */
@@ -469,7 +488,7 @@
   </div>
 
   <!-- Chat view (hidden until user selected) -->
-  <div id="chat-view" style="display:none; flex:1; display:none; flex-direction:column; height:100%;">
+  <div id="chat-view" style="display:none; flex:1; flex-direction:column; height:100%;">
     <div class="chat-header">
       <div class="avatar" id="header-avatar" style="width:42px;height:42px;font-size:16px;background:#6366f1"></div>
       <div class="chat-header-info">
@@ -573,7 +592,20 @@ let typingTimer = null, isTyping = false;
 let pendingFile = null;
 let unreadCounts = {};
 let currentDate = null;
-const ICE = { iceServers: [{ urls: 'stun:stun.l.google.com:19302' }, { urls: 'stun:stun1.l.google.com:19302' }] };
+const ICE = {
+  iceServers: [
+    { urls: 'stun:stun.l.google.com:19302' },
+    { urls: 'stun:stun1.l.google.com:19302' },
+    { urls: 'stun:stun2.l.google.com:19302' },
+    { urls: 'stun:stun3.l.google.com:19302' },
+    { urls: 'stun:stun4.l.google.com:19302' },
+    // Free TURN from Open Relay (works on Render/cloud)
+    { urls: 'turn:openrelay.metered.ca:80', username: 'openrelayproject', credential: 'openrelayproject' },
+    { urls: 'turn:openrelay.metered.ca:443', username: 'openrelayproject', credential: 'openrelayproject' },
+    { urls: 'turn:openrelay.metered.ca:443?transport=tcp', username: 'openrelayproject', credential: 'openrelayproject' }
+  ],
+  iceCandidatePoolSize: 10
+};
 
 // ===== EMOJI PICKER =====
 const EMOJIS = ['😀','😂','😍','🥰','😎','🤔','😢','😡','👍','👎','❤️','🔥','✨','🎉','🙏','💯','😅','🤣','😊','🥺','😤','🤩','😴','💀','🫡','👀','💬','🚀','⚡','🌟'];
@@ -620,18 +652,22 @@ async function uploadAndSend() {
   if (!pendingFile) return;
   const fd = new FormData();
   fd.append('file', pendingFile);
+  showNotif('📤', 'Uploading...', pendingFile.name);
   try {
     const res = await fetch('/upload', { method: 'POST', body: fd });
     const data = await res.json();
+    if (data.error) { showNotif('❌', 'Upload failed', data.error); cancelFile(); return; }
     if (data.url) {
-      socket.emit('send_message', {
+      const msgPayload = {
         recipient: selectedUser, content: '', is_file: true,
         file_url: data.url, file_type: data.type, file_name: data.name
-      });
+      };
+      socket.emit('send_message', msgPayload);
       appendMessage({ sender: ME, is_file: true, file_url: data.url, file_type: data.type, file_name: data.name, timestamp: now(), is_mine: true });
+      showNotif('✅', 'Uploaded', data.name);
     }
     cancelFile();
-  } catch (e) { showNotif('❌', 'Upload failed', e.message); }
+  } catch (e) { showNotif('❌', 'Upload failed', e.message); cancelFile(); }
 }
 
 // ===== USER SELECTION =====
@@ -709,7 +745,10 @@ function appendMessage(msg, scroll = true) {
     const fname = msg.file_name || 'File';
     const furl = msg.file_url || msg.content;
     if (ftype === 'image') {
-      bubbleContent = `<img src="${furl}" class="file-msg-img" onclick="openLightbox('${furl}')" loading="lazy">`;
+      bubbleContent = `<img src="${furl}" class="file-msg-img" 
+        onclick="openLightbox('${furl}')" loading="lazy"
+        onerror="this.onerror=null; this.src=''; this.parentElement.innerHTML='<a class=\\'file-download\\' href=\\'${furl}\\' target=\\'_blank\\'>🖼 ${fname} (tap to view)</a>'"
+      >`;
     } else if (ftype === 'video') {
       bubbleContent = `<video src="${furl}" class="msg-video" controls></video>`;
     } else if (ftype === 'audio') {
@@ -912,42 +951,66 @@ async function startCall(type) {
   if (!selectedUser) { showNotif('⚠️', 'Select a user first', ''); return; }
   callType = type;
   try {
-    localStream = await navigator.mediaDevices.getUserMedia({ video: type === 'video', audio: true });
+    const constraints = type === 'video' ? { video: { width: 640, height: 480 }, audio: true } : { audio: true, video: false };
+    localStream = await navigator.mediaDevices.getUserMedia(constraints);
     document.getElementById('localVideo').srcObject = localStream;
   } catch (e) {
-    showNotif('❌', 'Media Error', 'Cannot access camera/microphone'); return;
+    showNotif('❌', 'Media Error', 'Cannot access camera/microphone. Check browser permissions.');
+    console.error('getUserMedia error:', e);
+    return;
   }
   peerConnection = createPeerConnection();
   localStream.getTracks().forEach(t => peerConnection.addTrack(t, localStream));
-  const offer = await peerConnection.createOffer();
-  await peerConnection.setLocalDescription(offer);
-  socket.emit('webrtc_offer', { target: selectedUser, sdp: peerConnection.localDescription, call_type: type });
-
-  // Show overlay
-  showCallOverlay('outgoing', selectedDisplayName, selectedColor, selectedInitial);
+  try {
+    const offer = await peerConnection.createOffer();
+    await peerConnection.setLocalDescription(offer);
+    socket.emit('webrtc_offer', { target: selectedUser, sdp: peerConnection.localDescription, call_type: type });
+    showCallOverlay('outgoing', selectedDisplayName, selectedColor, selectedInitial);
+  } catch(e) {
+    showNotif('❌', 'Call Error', 'Failed to create offer'); console.error(e);
+  }
 }
-
 function createPeerConnection() {
   const pc = new RTCPeerConnection(ICE);
-  pc.ontrack = e => { document.getElementById('remoteVideo').srcObject = e.streams[0]; };
-  pc.onicecandidate = e => {
-    if (e.candidate) socket.emit('webrtc_ice_candidate', { target: selectedUser || incomingCallData?.sender, candidate: e.candidate });
+
+  pc.ontrack = (event) => {
+    const remoteVideo = document.getElementById('remoteVideo');
+    if (remoteVideo && event.streams[0]) remoteVideo.srcObject = event.streams[0];
   };
+
+  pc.onicecandidate = (event) => {
+    if (event.candidate) {
+      socket.emit('webrtc_ice_candidate', {
+        target: selectedUser,
+        candidate: event.candidate
+      });
+    }
+  };
+
   pc.onconnectionstatechange = () => {
-    if (['disconnected','failed','closed'].includes(pc.connectionState)) endCall();
+    if (pc.connectionState === 'failed') {
+      showNotif('❌', 'Call Failed', 'Connection failed. Try again.');
+      endCallCleanup();
+    }
   };
+
   return pc;
 }
 
 function showCallOverlay(mode, name, color, initial) {
   const overlay = document.getElementById('call-overlay');
   const av = document.getElementById('call-avatar');
-  av.style.background = color; av.textContent = initial;
-  document.getElementById('call-name').textContent = name;
-  document.getElementById('call-status').textContent = mode === 'outgoing' ? 'Calling...' : `Incoming ${callType} call`;
+  av.style.background = color || '#7c3aed'; av.textContent = initial || '?';
+  document.getElementById('call-name').textContent = name || 'Unknown';
+  document.getElementById('call-status').textContent = mode === 'outgoing' ? '📞 Calling...' : `📲 Incoming ${callType} call`;
+  // For outgoing: show end button so caller can cancel
   document.getElementById('call-btns-incoming').style.display = mode === 'incoming' ? 'flex' : 'none';
-  document.getElementById('call-btns-active').style.display = mode === 'active' ? 'flex' : 'none';
-  if (callType === 'video') document.getElementById('cam-btn').style.display = 'flex';
+  // Show active (end call) button for outgoing and active states
+  document.getElementById('call-btns-active').style.display = (mode === 'active' || mode === 'outgoing') ? 'flex' : 'none';
+  // Only show cam button if video call
+  document.getElementById('cam-btn').style.display = callType === 'video' ? 'flex' : 'none';
+  // Video grid only when connected
+  if (mode !== 'active') document.getElementById('video-grid').style.display = 'none';
   overlay.classList.add('show');
 }
 
@@ -965,21 +1028,34 @@ async function acceptCall() {
   if (!data) return;
   selectedUser = data.sender;
   try {
-    localStream = await navigator.mediaDevices.getUserMedia({ video: callType === 'video', audio: true });
+    const constraints = callType === 'video' ? { video: { width: 640, height: 480 }, audio: true } : { audio: true, video: false };
+    localStream = await navigator.mediaDevices.getUserMedia(constraints);
     document.getElementById('localVideo').srcObject = localStream;
-  } catch(e) { showNotif('❌', 'Media Error', 'Cannot access media'); rejectCall(); return; }
+  } catch(e) {
+    showNotif('❌', 'Media Error', 'Cannot access camera/mic. Check permissions.'); 
+    console.error(e);
+    rejectCall(); return;
+  }
 
   peerConnection = createPeerConnection();
   localStream.getTracks().forEach(t => peerConnection.addTrack(t, localStream));
-  await peerConnection.setRemoteDescription(new RTCSessionDescription(data.sdp));
-  const answer = await peerConnection.createAnswer();
-  await peerConnection.setLocalDescription(answer);
-  socket.emit('webrtc_answer', { target: data.sender, sdp: peerConnection.localDescription });
+
+  try {
+    await peerConnection.setRemoteDescription(new RTCSessionDescription(data.sdp));
+    const answer = await peerConnection.createAnswer();
+    await peerConnection.setLocalDescription(answer);
+    socket.emit('webrtc_answer', { target: data.sender, sdp: peerConnection.localDescription });
+  } catch(e) {
+    showNotif('❌', 'Call Error', 'Failed to answer call'); console.error(e);
+    rejectCall(); return;
+  }
 
   document.getElementById('call-btns-incoming').style.display = 'none';
   document.getElementById('call-btns-active').style.display = 'flex';
-  document.getElementById('call-status').textContent = 'Connected';
+  document.getElementById('call-status').textContent = '🟢 Connected';
+  document.getElementById('cam-btn').style.display = callType === 'video' ? 'flex' : 'none';
   if (callType === 'video') document.getElementById('video-grid').style.display = 'flex';
+  incomingCallData = null;
 }
 
 function rejectCall() {
@@ -992,7 +1068,8 @@ socket.on('webrtc_answer', async (data) => {
   if (peerConnection) {
     await peerConnection.setRemoteDescription(new RTCSessionDescription(data.sdp));
     document.getElementById('call-btns-active').style.display = 'flex';
-    document.getElementById('call-status').textContent = 'Connected';
+    document.getElementById('call-status').textContent = '🟢 Connected';
+    document.getElementById('cam-btn').style.display = callType === 'video' ? 'flex' : 'none';
     if (callType === 'video') document.getElementById('video-grid').style.display = 'flex';
   }
 });
